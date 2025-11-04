@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
+	"sync"
 )
 
 //TIP <p>To run your code, right-click the code and select <b>Run</b>.</p> <p>Alternatively, click
@@ -29,11 +31,16 @@ func main() {
 	}
 }
 
+var (
+	subscribers = make(map[string][]net.Conn)
+	mu          sync.Mutex
+)
+
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	for {
-		bytes, err := reader.ReadBytes('\n')
+		bytes, err := reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
 				fmt.Println("failed to read bytes from connection, err:", err)
@@ -42,8 +49,39 @@ func handleConnection(conn net.Conn) {
 		}
 		fmt.Printf("received request: %s", bytes)
 
-		line := fmt.Sprintf("%s\n", bytes)
-		fmt.Println(line)
-		conn.Write([]byte(line))
+		line := strings.TrimSpace(bytes)
+		parts := strings.SplitN(line, " ", 3)
+		if len(parts) < 2 {
+			conn.Write([]byte("too few arguments"))
+			continue
+		}
+		cmd := strings.ToUpper(parts[0])
+		topic := parts[1]
+
+		switch cmd {
+		case "SUB":
+			mu.Lock()
+			subscribers[topic] = append(subscribers[topic], conn)
+			mu.Unlock()
+			conn.Write([]byte("OK subscribed to " + topic + "\n"))
+		case "PUB":
+			if len(parts) < 3 {
+				conn.Write([]byte("too few arguments"))
+				continue
+			}
+			msg := parts[2]
+			mu.Lock()
+			subs := subscribers[topic]
+			mu.Unlock()
+			for _, sub := range subs {
+				if sub == conn {
+					continue
+				}
+				sub.Write([]byte(msg + "\n"))
+			}
+			conn.Write([]byte("published"))
+		default:
+			conn.Write([]byte("unknown command: " + cmd))
+		}
 	}
 }
