@@ -4,16 +4,18 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"mq-lite/internal/broker"
 	"net"
 	"os"
 	"strings"
-	"sync"
 )
 
 //TIP <p>To run your code, right-click the code and select <b>Run</b>.</p> <p>Alternatively, click
 // the <icon src="AllIcons.Actions.Execute"/> icon in the gutter and select the <b>Run</b> menu item from here.</p>
 
 func main() {
+
+	b := broker.New()
 	listener, err := net.Listen("tcp", ":8000")
 	if err != nil {
 		fmt.Println("failed to create listener, err:", err)
@@ -27,16 +29,11 @@ func main() {
 			fmt.Println("failed to accept connection, err:", err)
 			continue
 		}
-		go handleConnection(conn)
+		go handleConnection(b, conn)
 	}
 }
 
-var (
-	subscribers = make(map[string][]net.Conn)
-	mu          sync.Mutex
-)
-
-func handleConnection(conn net.Conn) {
+func handleConnection(b *broker.Broker, conn net.Conn) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	for {
@@ -50,6 +47,9 @@ func handleConnection(conn net.Conn) {
 		fmt.Printf("received request: %s", bytes)
 
 		line := strings.TrimSpace(bytes)
+		if len(line) == 0 {
+			continue
+		}
 		parts := strings.SplitN(line, " ", 3)
 		if len(parts) < 2 {
 			conn.Write([]byte("too few arguments"))
@@ -60,25 +60,12 @@ func handleConnection(conn net.Conn) {
 
 		switch cmd {
 		case "SUB":
-			mu.Lock()
-			subscribers[topic] = append(subscribers[topic], conn)
-			mu.Unlock()
-			conn.Write([]byte("OK subscribed to " + topic + "\n"))
+			b.Subscribe(topic, conn)
 		case "PUB":
 			if len(parts) < 3 {
 				conn.Write([]byte("too few arguments"))
-				continue
 			}
-			msg := parts[2]
-			mu.Lock()
-			subs := subscribers[topic]
-			mu.Unlock()
-			for _, sub := range subs {
-				if sub == conn {
-					continue
-				}
-				sub.Write([]byte(msg + "\n"))
-			}
+			b.Publish(topic, parts[2], conn)
 			conn.Write([]byte("published"))
 		default:
 			conn.Write([]byte("unknown command: " + cmd))
